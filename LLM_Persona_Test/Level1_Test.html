@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xeno-Ecology Simulation - Level 1</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script type="module">
+        // This allows the Groq SDK to run in a browser environment.
+        // In a real production app, API calls should be made from a secure backend server.
+        window.process = { env: { GROQ_API_KEY: "insert_your_api_key_here" } };
+    </script>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Roboto Mono', monospace;
+        }
+
+        .game-console-body {
+            background: linear-gradient(145deg, #3c3c3c, #1e1e1e);
+            border-radius: 30px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            align-items: center;
+            border: 2px solid #111;
+            width: 100%;
+            max-width: 900px;
+            box-shadow: inset 0 0 15px rgba(0,0,0,0.7), 0 10px 30px rgba(0,0,0,0.5);
+        }
+        
+        #canvas-header {
+            color: #aaa;
+            font-size: 1.2rem;
+            font-weight: bold;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        #game-canvas {
+            border: 2px solid #4a4a4a;
+            border-radius: 8px;
+            width: 100%;
+            max-width: 800px;
+            height: auto;
+            aspect-ratio: 1 / 1;
+            background-color: #000;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="game-console-body">
+        <div id="canvas-header">XENO-ECOLOGY LAB // CHRONO-BLOOM EXAM</div>
+        <canvas id="game-canvas" width="800" height="800"></canvas>
+    </div>
+
+    <script type="module">
+        import Groq from "https://esm.sh/groq-sdk";
+
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- API Configuration ---
+        const API_KEY = "add here"; // IMPORTANT: Replace with your Groq API key
+        let groq;
+
+        // --- Game State and Configuration ---
+        const gameState = {
+            player: { x: 385, y: 700, width: 30, height: 40, speed: 4, color: '#FFFFFF' },
+            keys: { w: false, a: false, s: false, d: false },
+            collectedComponents: {
+                stabilizer: false,
+                nutrients: false,
+                light: false
+            },
+            isTaskComplete: false,
+            message: '',
+            nearbyObject: null,
+            isAiThinking: false,
+            groundskeeperDialogueHistory: []
+        };
+
+        // --- Map Components (aligned with retro_background.png) ---
+        const interactables = [
+            // Main Objective
+            { id: 'plant', name: 'Chrono-Bloom', x: 360, y: 360, width: 80, height: 80, color: 'rgba(255, 0, 255, 0.5)' },
+            // Component Stations
+            { id: 'stabilizer', name: 'Temporal Stabilizer', x: 130, y: 150, width: 100, height: 50, color: 'rgba(0, 255, 255, 0.5)' },
+            { id: 'nutrients', name: 'Nutrient Synthesizer', x: 570, y: 150, width: 100, height: 50, color: 'rgba(65, 105, 225, 0.5)' },
+            { id: 'light', name: 'Lunar Lamp', x: 80, y: 400, width: 50, height: 80, color: 'rgba(255, 255, 0, 0.5)' },
+            // NPC
+            { id: 'groundskeeper', name: 'BOT-ANY 5000', x: 550, y: 650, width: 40, height: 60, color: 'rgba(128, 128, 128, 0.7)' },
+            // Exit
+            { id: 'exit', name: 'Exit Door', x: 375, y: 190, width: 50, height: 20, color: 'rgba(255, 69, 0, 0.7)' }
+        ];
+
+        // --- Asset Loading ---
+        const backgroundImage = new Image();
+        let backgroundLoaded = false;
+        backgroundImage.onload = () => {
+            backgroundLoaded = true;
+        };
+        backgroundImage.src = 'retro_background.png'; // Make sure this file is in the same directory
+
+        // --- AI Persona ---
+        const groundskeeperPersona = {
+            systemPrompt: `You are BOT-ANY 5000, the groundskeeper-bot of Tele-Prompt Academy. Your personality is a mix of a wise, old gardener and a slightly sarcastic, rustic robot. You find modern cadets a bit helpless but have a soft spot for the strange plants you tend. You refer to the player as 'Cadet'. Your goal is to give helpful but flavorful hints about the Chrono-Bloom exam. Keep your responses to 2-3 short sentences.`
+        };
+
+        // --- Groq API Integration ---
+        async function getAiDialogue() {
+            if (gameState.isAiThinking || !groq) return;
+
+            gameState.isAiThinking = true;
+            gameState.message = "BOT-ANY 5000 is thinking...";
+
+            let userPrompt = "The Cadet is asking for advice.";
+            if (gameState.isTaskComplete) {
+                userPrompt = "The Cadet has stabilized the Chrono-Bloom and is talking to me again. What do I say?";
+            } else if (gameState.collectedComponents.stabilizer && gameState.collectedComponents.nutrients && gameState.collectedComponents.light) {
+                 userPrompt = "The Cadet has all three components but hasn't used them yet. What's my final hint?";
+            }
+
+            const messages = [
+                { role: "system", content: groundskeeperPersona.systemPrompt },
+                ...gameState.groundskeeperDialogueHistory,
+                { role: "user", content: userPrompt }
+            ];
+
+            try {
+                const stream = await groq.chat.completions.create({ messages, model: 'llama-3.1-8b-instant', stream: true });
+                let fullResponse = "";
+                gameState.message = "BOT-ANY 5000: ";
+                for await (const chunk of stream) {
+                    const content = chunk.choices[0]?.delta?.content || "";
+                    fullResponse += content;
+                    gameState.message += content;
+                }
+                gameState.groundskeeperDialogueHistory.push({ role: 'user', content: userPrompt });
+                gameState.groundskeeperDialogueHistory.push({ role: 'assistant', content: fullResponse });
+
+            } catch (error) {
+                console.error("Groq API Error:", error);
+                gameState.message = "Error connecting to BOT-ANY 5000's processors.";
+            } finally {
+                gameState.isAiThinking = false;
+                 // Clear message after a while
+                setTimeout(() => { if (!gameState.nearbyObject) gameState.message = ''; }, 5000);
+            }
+        }
+
+        // --- Keyboard Input Handling ---
+        window.addEventListener('keydown', (e) => {
+            if (gameState.keys.hasOwnProperty(e.key.toLowerCase())) gameState.keys[e.key.toLowerCase()] = true;
+            if (e.key.toLowerCase() === 'e') handleInteraction();
+        });
+        window.addEventListener('keyup', (e) => {
+            if (gameState.keys.hasOwnProperty(e.key.toLowerCase())) gameState.keys[e.key.toLowerCase()] = false;
+        });
+        
+        // --- Collision and Interaction Logic ---
+        function checkCollision(rectA, rectB) {
+            const buffer = 15; 
+            return rectA.x < rectB.x + rectB.width + buffer &&
+                   rectA.x + rectA.width + buffer > rectB.x &&
+                   rectA.y < rectB.y + rectB.height + buffer &&
+                   rectA.y + rectA.height + buffer > rectB.y;
+        }
+
+        function handleInteraction() {
+            if (!gameState.nearbyObject || gameState.isAiThinking) return;
+
+            const { id } = gameState.nearbyObject;
+            let interactionMessage = "";
+            let messageDuration = 3000;
+
+            switch(id) {
+                case 'stabilizer':
+                    if (!gameState.collectedComponents.stabilizer) {
+                        gameState.collectedComponents.stabilizer = true;
+                        interactionMessage = "Collected [Temporal Frequency] component.";
+                    } else {
+                        interactionMessage = "You already have this component.";
+                    }
+                    break;
+                case 'nutrients':
+                     if (!gameState.collectedComponents.nutrients) {
+                        gameState.collectedComponents.nutrients = true;
+                        interactionMessage = "Collected [Nutrient Solution] component.";
+                    } else {
+                        interactionMessage = "You already have this component.";
+                    }
+                    break;
+                case 'light':
+                    if (!gameState.collectedComponents.light) {
+                        gameState.collectedComponents.light = true;
+                        interactionMessage = "Collected [Lunar-Cycle Light] component.";
+                    } else {
+                        interactionMessage = "You already have this component.";
+                    }
+                    break;
+                case 'groundskeeper':
+                    getAiDialogue();
+                    return; // AI function handles its own message
+                case 'plant':
+                    const { stabilizer, nutrients, light } = gameState.collectedComponents;
+                    if (stabilizer && nutrients && light) {
+                        if (!gameState.isTaskComplete) {
+                            gameState.isTaskComplete = true;
+                            interactionMessage = "Prompt uploaded! Chrono-Bloom is stable. Proceed to exit.";
+                        } else {
+                            interactionMessage = "The Chrono-Bloom is already stable.";
+                        }
+                    } else {
+                        interactionMessage = "Components missing. Cannot upload prompt.";
+                    }
+                    break;
+                case 'exit':
+                    if (gameState.isTaskComplete) {
+                         alert("Congratulations! Exam Complete!");
+                         location.reload(); 
+                    } else {
+                        interactionMessage = "Door is locked. Stabilize the Chrono-Bloom first.";
+                    }
+                    break;
+            }
+            gameState.message = interactionMessage;
+            setTimeout(() => { if(gameState.message === interactionMessage) gameState.message = ''; }, messageDuration);
+        }
+
+        // --- Game Loop ---
+        function update() {
+            const { player, keys } = gameState;
+            let nextX = player.x, nextY = player.y;
+
+            if (keys.w) nextY -= player.speed;
+            if (keys.s) nextY += player.speed;
+            if (keys.a) nextX -= player.speed;
+            if (keys.d) nextX += player.speed;
+
+            player.x = Math.max(0, Math.min(canvas.width - player.width, nextX));
+            player.y = Math.max(0, Math.min(canvas.height - player.height, nextY));
+
+            gameState.nearbyObject = null;
+            for (const obj of interactables) {
+                if (checkCollision(player, obj)) {
+                    gameState.nearbyObject = obj;
+                    break;
+                }
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Background
+            if (backgroundLoaded) {
+                ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height);
+            } else {
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // Draw Interactable Placeholders & Labels
+            interactables.forEach(obj => {
+                let color = obj.color;
+                if (obj.id === 'exit' && gameState.isTaskComplete) color = 'rgba(0, 255, 127, 0.7)';
+                
+                // Special pulsating effect for the Chrono-Bloom
+                if (obj.id === 'plant' && !gameState.isTaskComplete) {
+                    const pulse = Math.abs(Math.sin(Date.now() * 0.002));
+                    const r = Math.floor(255 * (1 - pulse) + 128 * pulse);
+                    const b = Math.floor(255 * pulse);
+                    color = `rgba(${r}, 0, ${b}, 0.6)`;
+                } else if (obj.id === 'plant' && gameState.isTaskComplete) {
+                     color = 'rgba(0, 255, 127, 0.7)';
+                }
+
+                ctx.fillStyle = color;
+                ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
+                
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = '12px "Roboto Mono"';
+                ctx.textAlign = 'center';
+                ctx.fillText(obj.name, obj.x + obj.width / 2, obj.y - 5);
+            });
+
+            // Draw Player
+            ctx.fillStyle = gameState.player.color;
+            ctx.fillRect(gameState.player.x, gameState.player.y, gameState.player.width, gameState.player.height);
+
+            // --- Draw UI/HUD ---
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(0, 0, canvas.width, 120); // Top HUD background
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = '16px "Roboto Mono"';
+            ctx.textAlign = 'left';
+            ctx.fillText("Objective: Stabilize the Chrono-Bloom", 20, 30);
+            ctx.fillText("1. Collect 3 Prompt Components.", 20, 55);
+            ctx.fillText("2. Interact with the Chrono-Bloom.", 20, 80);
+
+            ctx.textAlign = 'right';
+            ctx.fillText("COMPONENTS:", 780, 30);
+            ctx.fillStyle = gameState.collectedComponents.stabilizer ? '#00FFFF' : '#555';
+            ctx.fillText("[Temporal Freq.]", 780, 55);
+            ctx.fillStyle = gameState.collectedComponents.nutrients ? '#4169E1' : '#555';
+            ctx.fillText("[Nutrient Sol.]", 780, 80);
+            ctx.fillStyle = gameState.collectedComponents.light ? '#FFFF00' : '#555';
+            ctx.fillText("[Lunar Light]", 780, 105);
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(0, canvas.height - 50, canvas.width, 50); // Bottom HUD background
+
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#FFFFFF';
+            let bottomText = "Use WASD to move. Find components.";
+            if (gameState.message) {
+                 bottomText = gameState.message;
+            } else if (gameState.nearbyObject) {
+                 bottomText = `Press [E] to interact with ${gameState.nearbyObject.name}`;
+            }
+            ctx.fillText(bottomText, canvas.width / 2, canvas.height - 20);
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- Initialization ---
+        function init() {
+            if (API_KEY && !API_KEY.includes("...")) {
+                try {
+                    groq = new Groq({ apiKey: API_KEY, dangerouslyAllowBrowser: true });
+                    gameState.message = "BOT-ANY 5000 Online.";
+                } catch(e) {
+                    console.error("Failed to initialize Groq SDK:", e);
+                    gameState.message = "Could not initialize AI systems.";
+                }
+            } else {
+                gameState.message = "API Key missing. BOT-ANY 5000 is offline.";
+                console.warn("Please add your Groq API key to the script to enable AI dialogue.");
+            }
+            setTimeout(() => { gameState.message = ''; }, 4000);
+            gameLoop();
+        }
+
+        init();
+    </script>
+</body>
+</html>
+
